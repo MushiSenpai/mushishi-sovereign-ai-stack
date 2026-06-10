@@ -34,6 +34,42 @@ client:    GPU Nemotron (forensic config) → ERROR. No fallback.     (quality e
 
 That third one matters: for client work, *failing loudly* beats degrading silently.
 
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph MAC["Mac — thin client (2013 MBP, no local compute)"]
+        HD["Hermes Desktop<br/>(remote gateway mode)"]
+        VSC["VS Code Remote-SSH"]
+        BR["Browser: Netdata / Phoenix"]
+    end
+
+    MAC ==>|"Tailscale (WireGuard)<br/>the ONLY way in — UFW default-deny<br/>+ DOCKER-USER chain"| HUB
+
+    subgraph HUB["mushishi — Ubuntu 24.04 · RTX 5090 32GB · 128GB DDR5"]
+        direction TB
+        HERMES["Hermes Agent :8642<br/>three profiles"]
+        LITE["LiteLLM :4000<br/>cloud-budget proxy"]
+        subgraph GPU["GPU — one mode at a time (mode scripts + login picker)"]
+            FOR["FORENSIC / AGENT<br/>vLLM + Nemotron NVFP4<br/>~28-30GB · 180K ctx · FP8 KV"]
+            CRE["CREATIVE<br/>ComfyUI: FLUX.2 / Wan 2.2 / Hunyuan<br/>~14-24GB"]
+            AUD["AUDIO / MUSIC<br/>Fish Speech · lipsync · YuE 7B<br/>~10-16GB"]
+        end
+        CPU["CPU sovereignty floor — ALWAYS ON<br/>Nemotron Q4 GGUF · llama.cpp :8001<br/>~60GB RAM · 10-20 tok/s"]
+        OBS["Observability: Netdata :19999 · Phoenix :6006<br/>restic backups + daily watchdog → phone alerts"]
+    end
+
+    HERMES -->|"personal (T2)"| LITE
+    HERMES -->|"private (T1) — never cloud"| FOR
+    HERMES -.->|"GPU busy? fall back"| CPU
+    LITE ==>|"speed-optional fallback<br/>personal profile ONLY"| CLOUD["Kimi K2.6 → Groq → OpenRouter"]
+    FOR -->|"forensic JSON to disk,<br/>then VRAM handoff"| CRE
+```
+
+The diagram is text (Mermaid), versioned with the repo, and updated when the
+architecture changes — a diagram that can drift from reality is worse than no
+diagram.
+
 ## What's running
 
 ```
