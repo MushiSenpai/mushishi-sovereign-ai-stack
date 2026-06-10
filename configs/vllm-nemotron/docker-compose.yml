@@ -1,0 +1,91 @@
+# =============================================================================
+# Mushishi Sovereign AI Stack — vLLM Nemotron Forensic Mode
+# v1.5.1 — Updated 2026-05-17
+#
+# CHANGES FROM v1.5.0:
+#   - REMOVED: --moe-backend triton (not supported for NVFP4 MoE)
+#   - REMOVED: VLLM_USE_FLASHINFER_MOE_FP4=1 (breaks SM120/RTX 5090)
+#   - ADDED:   VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0 (frees ~0.5-1GB for KV cache)
+#   - CHANGED: gpu-memory-utilization 0.92 → 0.95 (GPU is clean, sequential workflow)
+#   - RATIONALE: vLLM auto-selects the correct NVFP4 MoE backend for SM120.
+#     Confirmed working on RTX 5090 per vllm-project/vllm#34452:
+#     "On a machine with an RTX 5090, the model works only without
+#      using the [FlashInfer MoE] environment variables."
+#
+# PREREQUISITES:
+#   - docker stop creative-comfyui   (sequential workflow — nothing else on GPU)
+#   - killall handy                  (Handy STT switched to Parakeet V3 CPU-only)
+#   - nvidia-smi should show <100 MiB used (gnome-shell only)
+#
+# DEPLOY:
+#   cp docker-compose.yml /data/ai/06-configs/vllm-nemotron/docker-compose.yml
+#   cd /data/ai/06-configs/vllm-nemotron
+#   docker compose up -d
+#   docker logs -f vllm-nemotron
+# =============================================================================
+
+services:
+  vllm-nemotron:
+    image: vllm/vllm-openai:v0.20.0
+    container_name: vllm-nemotron
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      # Build only for SM_120 (RTX 5090) — cuts JIT compile time
+      - TORCH_CUDA_ARCH_LIST=12.0
+      # Disable CUDA graph memory profiling — frees VRAM for KV cache
+      # (vLLM 0.21+ default reserves memory for graph capture estimates,
+      #  which steals from KV cache on memory-constrained single-GPU setups)
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
+      - VLLM_LOGGING_LEVEL=INFO
+    ports:
+      - "8000:8000"
+    volumes:
+      - /data/ai/02-models/nemotron-nvfp4:/model:ro
+      - /mnt:/mnt:ro                                 # client video access
+      - /data/ai/08-portfolio:/portfolio:ro           # forensic output (validation pass)
+      - vllm-hf-cache:/root/.cache/huggingface
+      - vllm-vllm-cache:/root/.cache/vllm
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    shm_size: "16gb"
+    restart: "no"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        echo "[startup] Installing audio support packages..."
+        pip install --no-cache-dir 'vllm[audio]'
+        echo "[startup] Starting vLLM..."
+        exec vllm serve /model \
+          --served-model-name nvidia/nemotron-3-nano-omni-30b-a3b-reasoning \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --trust-remote-code \
+          --max-model-len 180000 \
+          --max-num-seqs 4 \
+          --max-num-batched-tokens 16384 \
+          --gpu-memory-utilization 0.95 \
+          --kv-cache-dtype fp8 \
+          --enable-prefix-caching \
+          --reasoning-parser nemotron_v3 \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_coder \
+          --limit-mm-per-prompt '{"video": 1, "image": 8, "audio": 1}' \
+          --media-io-kwargs '{"video": {"fps": 8, "num_frames": 512}}' \
+          --allowed-local-media-path /mnt \
+          --video-pruning-rate 0.0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 600s
+
+volumes:
+  vllm-hf-cache:
+  vllm-vllm-cache:

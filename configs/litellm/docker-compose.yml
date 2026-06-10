@@ -1,0 +1,44 @@
+# LiteLLM Proxy + Postgres
+# Start: docker compose --env-file run.env up -d
+# Stop:  docker compose down
+# Logs:  docker compose logs -f litellm-proxy
+#
+# Requires phoenix network (start Phoenix first):
+#   cd /data/ai/06-configs/phoenix && docker compose up -d
+
+services:
+  litellm-postgres:
+    image: postgres:16-alpine
+    container_name: litellm-postgres
+    restart: unless-stopped
+    volumes:
+      - /data/ai/06-configs/litellm/pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${LITELLM_DB_PASS}
+    networks:
+      - litellm-internal
+
+  litellm-proxy:
+    image: ghcr.io/berriai/litellm-database:main-latest
+    container_name: litellm-proxy
+    restart: unless-stopped
+    depends_on:
+      - litellm-postgres
+    volumes:
+      - /data/ai/06-configs/litellm/config.yaml:/app/config.yaml
+    command: --port 4000 --config /app/config.yaml
+    env_file:
+      - /data/ai/06-configs/litellm/run.env
+    ports:
+      - "4000:4000"
+    networks:
+      - litellm-internal
+      - phoenix_default
+
+networks:
+  litellm-internal:
+    driver: bridge
+  phoenix_default:
+    external: true

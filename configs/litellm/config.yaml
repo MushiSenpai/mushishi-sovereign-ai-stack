@@ -1,0 +1,157 @@
+model_list:
+  # ── personal-chain: GPU Nemotron (host :8000, accessed via Docker bridge) ──
+  # Personal profile points at :4000 with model=personal-chain.
+  # LiteLLM owns the full GPU→cloud→CPU routing for this profile.
+  - model_name: personal-chain
+    litellm_params:
+      model: openai/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+      api_base: http://172.17.0.1:8000/v1
+      api_key: none
+
+  # ── cloud-fallback: Kimi K2.6 (tried when GPU fails) ──
+  - model_name: cloud-fallback
+    litellm_params:
+      model: nvidia_nim/moonshotai/kimi-k2.6
+      api_key: os.environ/NGC_API_KEY
+      api_base: https://integrate.api.nvidia.com/v1
+
+  # ── cloud-fallback-groq: second cloud tier ──
+  - model_name: cloud-fallback-groq
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: os.environ/GROQ_API_KEY
+
+  # ── cloud-fallback-or: third cloud tier ──
+  - model_name: cloud-fallback-or
+    litellm_params:
+      model: openrouter/meta-llama/llama-3.3-70b-instruct:free
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # ── personal-chain-cpu: CPU PRISM floor (llama.cpp :8001, Phase 4.5) ──
+  - model_name: personal-chain-cpu
+    litellm_params:
+      model: openai/nemotron-cpu-prism
+      api_base: http://172.17.0.1:8001/v1
+      api_key: none
+
+  # ── Phase 5.5: Callable group entry points for Paperclip agent routing ──
+  # These are the names agents set as their model. Fallbacks chain handles provider routing.
+  - model_name: cloud-preferred
+    litellm_params:
+      model: nvidia_nim/moonshotai/kimi-k2.6
+      api_key: os.environ/NGC_API_KEY
+      api_base: https://integrate.api.nvidia.com/v1
+
+  - model_name: sovereign-only
+    litellm_params:
+      model: openai/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+      api_base: http://172.17.0.1:8000/v1
+      api_key: none
+      max_parallel_requests: 2
+      rpm: 40
+
+  - model_name: pro-planning
+    litellm_params:
+      model: deepseek/deepseek-reasoner
+      api_key: os.environ/DEEPSEEK_API_KEY
+      rpm: 20
+      tpm: 200000
+      max_parallel_requests: 2
+    model_info:
+      cost_per_token_input: 0.00000174
+      cost_per_token_output: 0.00000348
+
+  # ── Phase 5.5: DeepSeek V4-Flash — cloud workhorse for Paperclip agents ──
+  - model_name: deepseek-flash
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+      rpm: 60
+      tpm: 500000
+      max_parallel_requests: 4
+    model_info:
+      cost_per_token_input: 0.00000014
+      cost_per_token_output: 0.00000028
+
+  # ── Phase 5.5: DeepSeek V4-Pro — gated reasoning escalation, approval-required ──
+  # VERIFY model string at api-docs.deepseek.com before use — aliases shift
+  - model_name: deepseek-pro
+    litellm_params:
+      model: deepseek/deepseek-reasoner
+      api_key: os.environ/DEEPSEEK_API_KEY
+      rpm: 20
+      tpm: 200000
+      max_parallel_requests: 2
+    model_info:
+      cost_per_token_input: 0.00000174
+      cost_per_token_output: 0.00000348
+
+  # ── Phase 5.5: nemotron-local-capped — concurrency-capped GPU entry for Paperclip groups ──
+  # Leaves headroom for sovereign/personal-chain work running in parallel
+  - model_name: nemotron-local-capped
+    litellm_params:
+      model: openai/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+      api_base: http://172.17.0.1:8000/v1
+      api_key: none
+      max_parallel_requests: 2
+      rpm: 40
+    model_info:
+      cost_per_token_input: 0
+      cost_per_token_output: 0
+
+router_settings:
+  routing_strategy: simple-shuffle
+  enable_pre_call_checks: true
+  enable_weighted_failover: true
+  allowed_fails: 2
+  num_retries: 2
+  timeout: 60
+  cooldown_time: 3600
+  # personal-chain: GPU fails → try cloud (Kimi→Groq→OR), then CPU PRISM
+  # cloud-fallback: Kimi fails → Groq, then OpenRouter
+  fallbacks:
+    - personal-chain:
+        - cloud-fallback
+        - personal-chain-cpu
+    - cloud-fallback:
+        - cloud-fallback-groq
+        - cloud-fallback-or
+    # Phase 5.5 groups
+    # cloud-preferred: free tiers → DeepSeek Flash → local last resort. Default for Paperclip.
+    - cloud-preferred:
+        - cloud-fallback
+        - cloud-fallback-groq
+        - cloud-fallback-or
+        - deepseek-flash
+        - nemotron-local-capped
+    # sovereign-only: local GPU only. Will fail rather than touch cloud.
+    # Used via Hermes profile bindings — never via Paperclip.
+    - sovereign-only:
+        - nemotron-local-capped
+        - personal-chain-cpu
+    # pro-planning: V4-Pro only, no fallbacks. Board approval required.
+    - pro-planning:
+        - deepseek-pro
+  # Budget enforcement per cloud provider
+  provider_budget_config:
+    nvidia_nim:
+      budget_limit: 1000000
+      time_period: 1d
+    groq:
+      budget_limit: 14000
+      time_period: 1d
+    openrouter:
+      budget_limit: 0.01
+      time_period: 1d
+  optional_pre_call_checks:
+    - router_budget_limiting
+
+litellm_settings:
+  success_callback:
+    - "opentelemetry"
+  failure_callback:
+    - "opentelemetry"
+
+general_settings:
+  master_key: "os.environ/LITELLM_MASTER_KEY"
+  database_url: "os.environ/DATABASE_URL"

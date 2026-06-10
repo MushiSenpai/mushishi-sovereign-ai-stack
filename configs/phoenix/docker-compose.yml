@@ -1,0 +1,15 @@
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: arize-phoenix
+    restart: unless-stopped
+    ports:
+      - "6006:6006"
+      - "4318:4318"
+    volumes:
+      - phoenix_data:/root/.phoenix
+    environment:
+      - PHOENIX_WORKING_DIR=/root/.phoenix
+
+volumes:
+  phoenix_data:
