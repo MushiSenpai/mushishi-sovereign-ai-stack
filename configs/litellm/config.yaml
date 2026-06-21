@@ -49,6 +49,7 @@ model_list:
       api_key: none
       max_parallel_requests: 2
       rpm: 40
+      cooldown_time: 0          # GPU Nemotron is up only during a dub (audio-stack cross-dub.sh); never auto-cooldown
 
   - model_name: pro-planning
     litellm_params:
