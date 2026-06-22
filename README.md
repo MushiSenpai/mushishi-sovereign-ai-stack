@@ -92,7 +92,7 @@ Security:
 | Metric | Value |
 |---|---|
 | Nemotron NVFP4 throughput (vLLM, RTX 5090) | **275 tok/s** @ 81-85W, 41-45°C |
-| Context at FP8 KV cache | 180K stable (228K theoretical ceiling) |
+| Context (total-VRAM bound, not KV-bound) | 180K stable (~228K total-VRAM ceiling; 256K = `max_position_embeddings`) |
 | Forensic-mode VRAM | ~28-30GB of 32GB |
 | Concurrent long-context agent ceiling | 3-5 sessions before KV-cache thrash |
 
@@ -102,7 +102,9 @@ Full methodology + raw CSV in [benchmarks/](benchmarks/). Updated weekly.
 
 Short version: TRT-LLM 1.3's AutoDeploy cannot trace multimodal-mandatory models — confirmed through six hours of structured debugging; NVIDIA's own benchmark paper and the model card both prescribe vLLM for this model. Long version with every dead end: **Decision Log §1–6** in the [spec](docs/mushishi-sovereign-ai-stack-v1.7.1.md). The dead ends are documented because they're the expensive part.
 
-Other non-obvious choices the spec defends: NVFP4 over FP8 (it's the only quantization leaving real KV headroom on 32GB), `--moe-backend triton` (FlashInfer MoE is broken on consumer Blackwell), display on iGPU to reclaim ~1GB VRAM (~25K context tokens), and a five-question tool-evaluation checklist that has kept the stack from accreting hype.
+Other non-obvious choices the spec defends: NVFP4 over FP8 (it's the only quantization leaving real *total*-VRAM headroom on 32GB), `--moe-backend triton` (FlashInfer MoE is broken on consumer Blackwell), display on iGPU to reclaim ~1GB of total VRAM, and a five-question tool-evaluation checklist that has kept the stack from accreting hype.
+
+> **Correction (2026-06-21):** earlier versions of this repo costed KV-cache as if Nemotron were a dense transformer and claimed "~25K context tokens per GB." Nemotron-3-Nano-Omni is a **NemotronH Mamba-2 / Transformer-MoE hybrid** — only **6 of its 52 layers do attention**, so FP8 attention-KV is ~**3 KB/token** (= 2 × 6 × 2 × 128), i.e. ~**350K tokens of attention-KV per GiB**, not ~25K. Because attention-KV is this cheap on a hybrid, **KV is not the binding constraint** on context — the 32GB ceiling is dominated by weights + CUDA graphs + multimodal buffers + per-sequence Mamba state. The full write-up: [theinvalid.me/blog/i-had-my-kv-cache-math-14x-wrong](https://theinvalid.me/blog/i-had-my-kv-cache-math-14x-wrong).
 
 ## Repo layout
 

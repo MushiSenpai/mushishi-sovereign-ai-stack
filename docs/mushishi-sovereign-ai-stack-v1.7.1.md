@@ -36,7 +36,7 @@
 > - **Commercial creative use case formalized as T1.** Client video work (4K, 24–60fps deliverables) drives the architecture. Forensic-detail captioning constrains downstream diffusion against hallucination. New T1 `client` Hermes profile (never falls back).
 > - **Forensic multimodal pipeline:** `forensic_analyzer.py` runs three-pass orchestration (tiered inventory → parallel per-element forensic → scene consistency map) with reasoning trace captured for provenance. Tiered triage handles dense scenes (e.g. Mumbai street) without hallucinated enumeration.
 > - **Workflow reframed as sequential.** Nemotron analysis → JSON to disk → flush VRAM → load creative stack. Two phases never run concurrently. Unlocks aggressive vLLM settings (180K context, FP8 KV cache, 92% GPU mem util).
-> - **iGPU switch completed.** Display now on motherboard HDMI/DisplayPort driven by Ryzen 9900X3D integrated graphics. Frees ~1GB VRAM (~25K extra context tokens). Verified: 524 MiB used / 32607 MiB free at idle.
+> - **iGPU switch completed.** Display now on motherboard HDMI/DisplayPort driven by Ryzen 9900X3D integrated graphics. Frees ~1GB of *total* VRAM (the budget that's actually tight — NOT a meaningful KV-cache gain; see §13 correction). Verified: 524 MiB used / 32607 MiB free at idle.
 > - **Mode-switch scripts:** `forensic-mode.sh`, `client-job.sh`, `creative-mode.sh` — all detect `vllm-nemotron` container, sequential workflow.
 > - **Decision Log appended** at the end of document — full reasoning for the v1.4 → v1.5 pivot for GitHub publication.
 >
@@ -73,7 +73,7 @@ Commercial creative work — pre-shot client video where the deliverable is **4K
 | **Linux (mushishi)** | Compute | Ryzen 9 9900X3D (with iGPU, now driving display as of v1.5), TUF X870-PLUS WIFI, 128GB RAM, RTX 5090 32GB VRAM, Ubuntu 24.04 LTS, CUDA 13.2, driver 595.71.05 |
 | **Storage (Linux)** | `/data` = 1.6TB NVMe (1.2TB free), `/home` = 1.3TB NVMe, root = 196GB NVMe, external = 293GB at `/media/mushi/52B434D9B434C171` |
 
-> **iGPU switch — COMPLETED May 16, 2026 (v1.5):** Monitor now driven by integrated Radeon graphics on motherboard HDMI/DisplayPort. RTX 5090 idle baseline: ~500 MiB used (down from ~1GB). Verified via `nvidia-smi`: 524 MiB used / 32607 MiB free at idle. BIOS Primary Display set to IGFX/iGPU. This frees ~25K context tokens for Nemotron's KV cache budget — meaningful for forensic work.
+> **iGPU switch — COMPLETED May 16, 2026 (v1.5):** Monitor now driven by integrated Radeon graphics on motherboard HDMI/DisplayPort. RTX 5090 idle baseline: ~500 MiB used (down from ~1GB). Verified via `nvidia-smi`: 524 MiB used / 32607 MiB free at idle. BIOS Primary Display set to IGFX/iGPU. This frees ~1GB of *total* VRAM — meaningful for forensic work because total allocation is what's tight on 32GB. (An earlier note framed this as "~25K context tokens"; that was a dense-transformer KV miscalc — on the NemotronH hybrid attention-KV is tiny and not the binding constraint. See §13.)
 
 > **Mac — OCLP + Sonoma:** After any Sonoma upgrade or OCLP update, always re-apply the Post-Install Volume Patch to restore Intel Iris Pro Metal acceleration. Verify: `system_profiler SPDisplaysDataType | grep Metal` — must show Metal support, not "Software Rendered."
 
@@ -212,7 +212,7 @@ Before adding any new tool to this stack, run it through these five questions in
 
 2. **Overlap:** Does this duplicate something already in the stack? If yes, pick one — running both creates config drift and confusion. (Examples: Ruflo vs gstack, LiteLLM vs Hermes routing, Paperclip vs Aion UI for cockpit-style use.)
 
-3. **Hardware fit:** Does it fit the RTX 5090's ~14GB KV cache ceiling (for local) or your monthly cloud budget (for cloud)? Tools that promise "60-agent swarms" or "infinite parallelism" are fanning out to cloud APIs — count the real cost.
+3. **Hardware fit:** Does it fit the RTX 5090's ~14GB of free total VRAM after weights (for local) or your monthly cloud budget (for cloud)? (That free space is mostly activations + per-sequence Mamba state, not attention-KV, which is tiny on this hybrid — see §7/§8.) Tools that promise "60-agent swarms" or "infinite parallelism" are fanning out to cloud APIs — count the real cost.
 
 4. **Sovereignty trade-off:** What am I trading for the capability? If the answer is "I'm sending sensitive work to a third-party API," is the work actually sensitive? Match the tool tier to the work tier.
 
@@ -242,11 +242,13 @@ Available for compute:           ~32,100 MiB
 | Audio encoder (Parakeet-TDT-0.6B-v2) | ~0.6 GB |
 | CUDA graphs + activations | ~2 GB |
 | Multimodal preprocessing buffers | ~1.5 GB |
-| KV cache (FP8 quantized, 180K context) | ~7-8 GB |
-| Safety margin | ~1.5 GB |
+| Attention-KV cache (FP8, 180K context) | <~0.6 GB (hybrid — see note) |
+| Per-sequence Mamba state + activations working set + safety margin | the rest |
 | **Total** | **~28-30 GB** |
 
-> **Why 180K context, not 256K (the model's theoretical max):** Real ceiling on 32GB at FP8 KV cache is ~228K tokens. 180K leaves ~25% headroom for edge cases (heavy reasoning + reference images). Bump to 200-220K only when actual context-full errors appear. See Decision Log §7 for full math.
+> **The KV line was ~7-8 GB in earlier versions — that was a dense-transformer overestimate.** Nemotron is a NemotronH hybrid (6 of 52 layers attend), so FP8 attention-KV is ~3 KB/token (~350K tokens/GiB); 180K context is roughly half a GiB of attention-KV, not 7-8. The non-KV lines (weights, graphs, multimodal buffers, per-sequence Mamba state) are what fill the budget. See §7/§8/§13 corrections.
+
+> **Why 180K context, not 256K (the model's `max_position_embeddings`):** The practical ceiling on 32GB is ~228K tokens — a *total-VRAM* ceiling (weights + graphs + multimodal buffers + per-sequence state), **not** a KV ceiling. 256K is the theoretical position cap. 180K leaves ~25% headroom for edge cases (heavy reasoning + reference images). Bump to 200-220K only when actual context-full / OOM errors appear. See Decision Log §7 for full math.
 
 ### Agent Mode (T1/T2 general work) — UNCHANGED concept, retuned for vLLM
 
@@ -881,7 +883,7 @@ volumes:
 | `--max-num-seqs` | 4 | Sequential workflow (no concurrent ComfyUI). Aligns with the 3-5 agent concurrent ceiling from v1.4 VRAM analysis. |
 | `--max-num-batched-tokens` | 16384 | Per-batch token cap. Conservative for long multimodal prompts. |
 | `--gpu-memory-utilization` | 0.92 | Aggressive (solo operation, iGPU display, no concurrent VRAM pressure). |
-| `--kv-cache-dtype` | fp8 | Halves KV memory per token. Negligible quality impact for description tasks. **Free 2× context capacity.** |
+| `--kv-cache-dtype` | fp8 | Halves attention-KV per token. Negligible quality impact for description tasks. (On this NemotronH hybrid only 6/52 layers attend, so attention-KV is already tiny — ~3 KB/token; this is a small saving, not the "2× context" lever earlier docs implied. Context is bound by total VRAM, not KV. See §7/§8 corrections.) |
 | `--enable-prefix-caching` | on | **Critical for forensic workflow.** Multi-pass requests reuse cached video tokens: Pass 2+ are 5-7× faster. |
 | `--reasoning-parser` | nemotron_v3 | Required for the model's `<think>...</think>` reasoning blocks to be parsed. |
 | `--enable-auto-tool-choice` | on | Required for function-call output structure. |
@@ -894,8 +896,8 @@ volumes:
 
 ### Why NVFP4 specifically (not FP8 or BF16)
 - **BF16** (62GB) doesn't fit on a 32GB GPU at all.
-- **FP8** (33GB) would fit weights but leave only ~1GB for KV cache → useless context budget.
-- **NVFP4** (21GB) is the only quantization giving us both: weights fit (~18GB in VRAM after engine optimization) AND ~7-8GB KV cache headroom → 180K context with FP8 KV.
+- **FP8** (33GB) would fit weights but leave almost no *total* VRAM free → no room for graphs/buffers/per-sequence state, OOM on first big tensor.
+- **NVFP4** (21GB) is the only quantization giving us both: weights fit (~18GB in VRAM after engine optimization) AND ~7-8GB of *total* VRAM free for everything-that-isn't-weights → 180K context. (Earlier docs labelled that free space "KV cache headroom"; on this hybrid attention-KV is a tiny fraction of it — the headroom is mostly graphs, multimodal buffers, and per-sequence Mamba state. See §7/§8/§13.)
 - **Quality:** NVIDIA states "negligible accuracy loss" between BF16 and NVFP4 for this model. Blackwell-native 4-bit block-scaled format designed for SM_120 hardware acceleration.
 
 ---
@@ -3931,13 +3933,12 @@ CUDA graphs + activations:       -2,000 MB
 Multimodal buffers:              -1,500 MB
 Safety margin:                   -1,500 MB
 ─────────────────────────────────────────────
-Available for KV cache:           ~7,300 MB
-
-FP8 KV cache, MoE 30B-A3B model:  ~32 KB per token
-Tokens that fit:                  ~228,000 tokens
+Free for KV + per-sequence state: ~7,300 MB
 ```
 
-So **228K is the actual ceiling**, not 256K. The user correctly intuited that 256K was "too much" — it's actually physically impossible.
+So **~228K is the actual total-VRAM ceiling**, not 256K. The user correctly intuited that 256K was "too much" — 256K is `max_position_embeddings` (theoretical position cap), and physically the box runs out of *total* VRAM well before then.
+
+> **Correction (2026-06-21) — this block originally read "FP8 KV cache, MoE 30B-A3B model: ~32 KB per token → ~228,000 tokens," implying ~228K was a *KV* ceiling. It is not.** The ~32 KB/token figure is a dense-transformer rate (all layers attend). Nemotron-3-Nano-Omni is a **NemotronH hybrid: only 6 of 52 layers attend**, so FP8 attention-KV is **~3,072 bytes/token** (= 2 × 6 × 2 × 128) — ~10× cheaper. At that rate the ~7.3GB free would hold ~2.5M tokens of attention-KV, which makes the point clear: **attention-KV is nowhere near the constraint.** The real ~228K ceiling is the *total*-VRAM ceiling (weights + graphs + multimodal buffers + per-sequence Mamba state + the small KV slice), not a KV-cache limit. 180K is chosen for total-allocation headroom under spiky multimodal loads, not because KV runs out. See theinvalid.me/blog/i-had-my-kv-cache-math-14x-wrong.
 
 Options considered:
 - 256K → **impossible** (math doesn't work)
@@ -3952,12 +3953,11 @@ This is the right call. The signal for "raise to 220K" is "we hit context-full e
 
 ## §8 — Why FP8 KV cache
 
-FP8 KV cache halves memory per token (~32KB → ~16KB at MoE 30B sizes). Effect:
-- Same VRAM budget supports **2× context length**
+FP8 KV cache halves the *attention*-KV memory per token. Effect:
 - Quality impact for description tasks is **negligible** (FP8 KV is production-standard for description workloads in Anthropic and NVIDIA infra)
 - The forensic use case is **description**, not generation chained against very-long-distance dependencies — the failure modes of FP8 KV (small accumulated errors over hundreds of dependent tokens) don't apply
 
-Without FP8 KV, we'd have been stuck at ~90K context for the same VRAM budget. Near-free win.
+> **Correction (2026-06-21):** the original line ("halves memory per token ~32KB → ~16KB," "Without FP8 KV we'd have been stuck at ~90K context") overstated KV's role on this model. Nemotron is a **NemotronH hybrid (6 of 52 layers attend)**, so attention-KV is already tiny — ~3 KB/token at FP8 (= 2 × 6 × 2 × 128), ~350K tokens/GiB. FP8 KV is kept for the small saving and the production-standard quality, but it is **not** what unlocks 180K context — total VRAM (weights + graphs + multimodal buffers + per-sequence Mamba state) is the real budget, and KV is a small slice of it. See theinvalid.me/blog/i-had-my-kv-cache-math-14x-wrong.
 
 ## §9 — Why EVS (video pruning) is disabled
 
@@ -4019,13 +4019,23 @@ This is **way better** than the earlier mental model of "Nemotron handles, Comfy
 2. **Mode-switch scripts mediate the transitions**: `forensic-mode.sh` (Nemotron up) → `client-job.sh` (analysis, JSON out) → manual flush → `creative-mode.sh` (ComfyUI up). The JSON sits on disk as the bridge between phases.
 3. **No live VRAM contention**: Bigger context budget, faster inference, simpler ops.
 
-## §13 — Why the iGPU switch matters (~25K context tokens)
+## §13 — Why the iGPU switch matters (~1GB of total VRAM)
 
 Before the switch, Xorg + gnome-shell were consuming ~1GB of VRAM on the RTX 5090. After plugging the monitor into the motherboard HDMI (driven by the Ryzen 9 9900X3D's integrated graphics), the 5090 has its full 32GB available.
 
-The math: 1GB of saved VRAM equals ~25,000 additional context tokens at FP8 KV cache. That's roughly 7,500 more output tokens of forensic description (since reasoning + output uses ~3× token budget).
-
 This was a 10-minute downtime to do once and reap benefits for the life of the system.
+
+> **Correction (2026-06-21) — this section used to claim "1GB = ~25,000 additional context tokens at FP8 KV cache." That math was wrong.** It costed KV as if Nemotron were a dense transformer (every layer attends). Nemotron-3-Nano-Omni is a **NemotronH Mamba-2 / Transformer-MoE hybrid: only 6 of its 52 layers do self-attention.** The Mamba-2 layers carry sequence state in a fixed-size recurrent state, not a growing KV-cache.
+>
+> Corrected attention-KV rate at FP8:
+> ```
+> bytes/token = 2 (K,V) × 6 (attention layers) × 2 × 128 (head dim) = 3,072 bytes/token (~3 KB/token)
+> 1 GiB / 3,072 bytes ≈ ~350,000 tokens of attention-KV
+> 500 MiB              ≈ ~170,000 tokens of attention-KV
+> ```
+> So freeing ~1GB is worth ~350K tokens of *attention-KV*, not ~25K — the original figure was ~14× too pessimistic because it multiplied by all 52 layers instead of the 6 that attend.
+>
+> **More importantly: attention-KV is NOT the binding constraint on this box.** Because it's so cheap on a hybrid, context is limited by *total* VRAM allocation — weights (~18GB NVFP4), CUDA graphs + activations, multimodal preprocessing buffers, and per-sequence Mamba state — not by KV. So the right reason to do the iGPU switch is "~1GB back in the total budget that's actually tight," not a KV-cache win. The ~228K context ceiling below is a total-VRAM ceiling, not a KV ceiling; 256K is `max_position_embeddings` (theoretical). Full write-up: theinvalid.me/blog/i-had-my-kv-cache-math-14x-wrong.
 
 ## §14 — Sovereignty tier integration with the v1.4 framework
 
@@ -4056,6 +4066,7 @@ The "why we tried that" is more valuable than the "it didn't work" — these art
 
 - **NVFP4**: NVIDIA's 4-bit block-scaled floating-point quantization format, hardware-accelerated on Blackwell (SM_120). 4 bits per weight + small per-block scale factor. ~75% smaller than BF16 with negligible quality loss for inference.
 - **MoE (Mixture of Experts)**: Architecture where the model has many "expert" sub-networks but only activates a few per forward pass. Nemotron-3-Nano-Omni: 30B total / 3B active per token.
+- **NemotronH (Mamba-2 / Transformer-MoE hybrid)**: Nemotron-3-Nano-Omni is **not** a dense transformer. It interleaves Mamba-2 (state-space) layers, MoE feed-forward layers, and a *small* number of self-attention layers — **only 6 of its 52 layers do attention.** Consequence for VRAM: only those 6 layers contribute a growing KV-cache; Mamba-2 layers carry sequence info in a fixed-size recurrent per-sequence state (constant per token, not growing). So FP8 attention-KV is ~3 KB/token (= 2 × 6 × 2 × 128) ≈ ~350K tokens/GiB — far cheaper than the dense-transformer rate, and **not** the binding constraint on context. Cost KV against this architecture, not the transformer template. (See §7/§8/§13 corrections, 2026-06-21.)
 - **A3B**: "Active 3 Billion" — refers to the 3B activated parameters per forward pass in this MoE.
 - **C-RADIOv4-H**: NVIDIA's vision encoder used in Nemotron-Omni. Variable-resolution patch-based image processor producing 1024-13312 visual tokens depending on image complexity.
 - **Parakeet-TDT-0.6B-v2**: NVIDIA's audio encoder. Resamples to 16kHz mono, produces log-mel spectrograms, applies 3 stride-2 conv subsampling layers.

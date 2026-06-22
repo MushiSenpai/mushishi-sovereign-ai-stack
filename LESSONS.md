@@ -34,10 +34,15 @@ at first inference, not at load.
 **FlashInfer MoE is broken on consumer Blackwell** — `--moe-backend triton` is
 the workaround for Nemotron MoE.
 
-**KV cache headroom is the real concurrency limit.** Weights fitting means
-nothing; 3-5 concurrent long-context sessions is the practical ceiling at
-NVFP4, and beyond it throughput collapses to 1-2 tok/s from cache thrash, it
-doesn't degrade gracefully.
+**Total per-sequence VRAM is the real concurrency limit, not attention-KV.**
+Weights fitting means nothing; 3-5 concurrent long-context sessions is the
+practical ceiling at NVFP4, and beyond it throughput collapses to 1-2 tok/s, it
+doesn't degrade gracefully. NOTE (2026-06-21): earlier docs blamed "KV-cache
+thrash." Nemotron is a NemotronH Mamba-2/Transformer hybrid — only 6 of 52
+layers attend, so attention-KV is tiny (~3 KB/token). What actually fills VRAM
+per concurrent session is the per-sequence Mamba state + activations + the small
+KV slice. Same ceiling, correct cause. See
+theinvalid.me/blog/i-had-my-kv-cache-math-14x-wrong.
 
 **`--video-pruning-rate 0.0` (EVS off) for forensic work** — the default frame
 pruning trades exactly the details you're being paid to capture, for ~30%
