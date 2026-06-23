@@ -1,0 +1,60 @@
+<svg viewBox="0 0 700 480" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="st sd">
+<title id="st">Sovereign AI stack architecture</title>
+<desc id="sd">Thin clients reach a single RTX 5090 workstation over Tailscale. LiteLLM routes to one GPU mode, else the CPU floor, and only falls back to cloud as a last resort. A small VPS serves the public site.</desc>
+<rect x="0" y="0" width="700" height="480" rx="14" fill="#0b0e14"/>
+<defs>
+  <marker id="ga" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#e8a33d"/></marker>
+  <marker id="gm" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5b6270"/></marker>
+</defs>
+<g font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <text x="24" y="36" font-size="15" font-weight="500" fill="#e6e1d7">sovereign ai stack — <tspan fill="#e8a33d">one rtx 5090</tspan></text>
+  <g fill="none" stroke-width="1.6">
+    <path d="M146,234 L166,234" stroke="#e8a33d" marker-end="url(#ga)"/>
+    <path d="M250,206 L250,160" stroke="#5b6270" marker-end="url(#gm)"/>
+    <path d="M300,224 L380,152" stroke="#e8a33d" marker-end="url(#ga)"/>
+    <path d="M454,176 L454,186" stroke="#e8a33d" marker-end="url(#ga)"/>
+    <path d="M524,150 L544,186" stroke="#e8a33d" marker-end="url(#ga)"/>
+    <path d="M455,326 L455,406" stroke="#5b6270" stroke-dasharray="4 3" marker-end="url(#gm)"/>
+  </g>
+  <g font-size="10" fill="#8a8f98">
+    <text x="256" y="184">web</text>
+    <text x="332" y="180">api</text>
+    <text x="462" y="372">fallback</text>
+  </g>
+  <rect x="24" y="206" width="122" height="56" rx="10" fill="#11151f" stroke="#3a4252"/>
+  <text x="85" y="230" font-size="13" font-weight="500" fill="#e6e1d7" text-anchor="middle">clients</text>
+  <text x="85" y="247" font-size="10" fill="#8a8f98" text-anchor="middle">mac / phone</text>
+  <rect x="168" y="206" width="132" height="56" rx="10" fill="#11151f" stroke="#e8a33d"/>
+  <text x="234" y="230" font-size="13" font-weight="500" fill="#e6e1d7" text-anchor="middle">tailscale</text>
+  <text x="234" y="247" font-size="10" fill="#8a8f98" text-anchor="middle">tailnet · wireguard</text>
+  <rect x="168" y="104" width="180" height="54" rx="10" fill="#11151f" stroke="#5b6270"/>
+  <text x="258" y="127" font-size="13" font-weight="500" fill="#e6e1d7" text-anchor="middle">theinvalid-vps</text>
+  <text x="258" y="144" font-size="10" fill="#8a8f98" text-anchor="middle">caddy :443 · public</text>
+  <rect x="368" y="92" width="312" height="234" rx="12" fill="#0c1119" stroke="#b07d2e"/>
+  <text x="384" y="114" font-size="12" font-weight="500" fill="#e6e1d7">mushishi · rtx 5090 32gb</text>
+  <rect x="384" y="124" width="140" height="52" rx="8" fill="#171c27" stroke="#3a4252"/>
+  <text x="454" y="146" font-size="12" font-weight="500" fill="#e6e1d7" text-anchor="middle">litellm router</text>
+  <text x="454" y="162" font-size="10" fill="#e8a33d" text-anchor="middle">:4000 · personal-chain</text>
+  <rect x="536" y="124" width="128" height="52" rx="8" fill="#171c27" stroke="#3a4252"/>
+  <text x="600" y="146" font-size="12" font-weight="500" fill="#e6e1d7" text-anchor="middle">hermes</text>
+  <text x="600" y="162" font-size="10" fill="#e8a33d" text-anchor="middle">:8642 · 3 profiles</text>
+  <rect x="384" y="188" width="150" height="52" rx="8" fill="#171c27" stroke="#e8a33d"/>
+  <text x="459" y="210" font-size="12" font-weight="500" fill="#e6e1d7" text-anchor="middle">gpu — one mode</text>
+  <text x="459" y="226" font-size="10" fill="#8a8f98" text-anchor="middle">vllm / comfyui / audio</text>
+  <rect x="546" y="188" width="118" height="52" rx="8" fill="#171c27" stroke="#3a4252"/>
+  <text x="605" y="210" font-size="12" font-weight="500" fill="#e6e1d7" text-anchor="middle">cpu floor</text>
+  <text x="605" y="226" font-size="10" fill="#e8a33d" text-anchor="middle">:8001</text>
+  <rect x="384" y="252" width="280" height="44" rx="8" fill="#11151f" stroke="#3a4252"/>
+  <text x="524" y="271" font-size="10.5" fill="#8a8f98" text-anchor="middle">open webui · paperclip · crawl4ai · phoenix</text>
+  <text x="524" y="285" font-size="9.5" fill="#5b6270" text-anchor="middle">:3080 · :3100 · :11235 · :6006</text>
+  <rect x="430" y="406" width="250" height="54" rx="10" fill="#11151f" stroke="#5b6270" stroke-dasharray="4 3"/>
+  <text x="555" y="429" font-size="12" font-weight="500" fill="#e6e1d7" text-anchor="middle">cloud — fallback only</text>
+  <text x="555" y="446" font-size="10" fill="#8a8f98" text-anchor="middle">deepseek · groq · openrouter · ngc</text>
+  <g font-size="10" fill="#8a8f98">
+    <line x1="24" y1="360" x2="44" y2="360" stroke="#e8a33d" stroke-width="2"/>
+    <text x="50" y="364">sovereign / local path</text>
+    <line x1="24" y1="380" x2="44" y2="380" stroke="#5b6270" stroke-width="2" stroke-dasharray="4 3"/>
+    <text x="50" y="384">edge / cloud (fallback)</text>
+  </g>
+</g>
+</svg>

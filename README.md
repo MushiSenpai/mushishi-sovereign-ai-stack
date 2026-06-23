@@ -4,6 +4,8 @@
 
 Daily-driven since May 2026 on: Ryzen 9 9900X3D · 128GB DDR5 · RTX 5090 32GB · Ubuntu 24.04, with a 2013 MacBook Pro as a thin client over Tailscale. Companions: [creative stack](https://github.com/MushiSenpai/mushishi-creative-stack) · [audio stack](https://github.com/MushiSenpai/mushishi-audio-stack).
 
+<p align="center"><img src="docs/architecture.svg" alt="Sovereign AI stack architecture: thin clients reach one RTX 5090 over Tailscale; LiteLLM routes to a GPU mode, else the CPU floor, else cloud as a last resort" width="700"></p>
+
 ---
 
 ## How this was built (read this first)
