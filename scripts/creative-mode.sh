@@ -5,22 +5,27 @@
 set -e
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
-COMFYUI_COMPOSE="/data/ai/06-configs/comfyui"
+# Shared, complete GPU-tenant stop-list (EXECUTION-PLAN B2)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/gpu-tenants.sh"
+
+COMFYUI_COMPOSE="/data/ai/06-configs/creative-stack"
 COMFYUI_URL="http://localhost:8188"
 VRAM_TARGET_GB=${1:-24}
 VRAM_TARGET_MB=$((VRAM_TARGET_GB * 1024))
 
 echo -e "${YELLOW}🎨 CREATIVE MODE — Switching to ComfyUI (target: ${VRAM_TARGET_GB}GB free)...${NC}"
 
-if docker ps --format '{{.Names}}' | grep -q "vllm-nemotron"; then
-  echo -e "${YELLOW}⚠️  vllm-nemotron running (~28-30GB VRAM). Stop to free for ComfyUI?${NC}"
-  read -p "   Stop now? (y/N): " confirm
-  if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-    docker stop vllm-nemotron || true
-    sleep 5
-  else
-    echo "Aborted." && exit 1
-  fi
+# ComfyUI runs sequentially on a clean card. Stop EVERY other GPU tenant —
+# both vLLMs, YuE music, and the audio/lipsync tiers (which lazy-load VRAM and
+# would OOM a generation mid-run).
+OTHERS=$(running_gpu_tenants_except creative-comfyui)
+if [ -n "$OTHERS" ]; then
+  echo -e "${YELLOW}⚠️  GPU tenants running — stop to free VRAM for ComfyUI?${NC}"
+  echo "$OTHERS" | sed 's/^/     - /'
+  confirm_or_assume "   Stop now?" || { echo "Aborted."; exit 1; }
+  stop_gpu_tenants_except creative-comfyui
+  sleep 5
 fi
 
 VRAM_FREE_MB=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits)

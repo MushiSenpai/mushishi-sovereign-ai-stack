@@ -1,5 +1,17 @@
 # 🧠 Mushishi Sovereign AI Stack — Complete Setup Plan
-> **Version:** 1.7.1 | **Updated:** June 10, 2026 | **Status:** Phases 0–4.5 complete, Phase 5 partial
+> **Version:** 1.8 | **Updated:** July 2, 2026 | **Status:** Phases 0–4.5 complete, Phase 5 partial
+> v1.8 (Jul 2, 2026): **Agent mode + shared GPU-tenant stop-list (EXECUTION-PLAN B2), and a
+> stale-flag correction.** (1) New `agent-mode.sh` + `/data/ai/06-configs/vllm-nemotron-agent/`
+> compose: same Nemotron NVFP4 on :8000 but 32K ctx / util 0.82 (~25.7GB), tuned to coexist with
+> the light audio stack (Fish Speech TTS) — single-pass vision+TTS pipelines (comic-narrator) now
+> run in one mode. (2) `gpu-tenants.sh` is the SINGLE SOURCE OF TRUTH for the GPU stop-list: all
+> six `*-mode.sh` switchers + `mode-picker.sh` source it instead of five drifting greps — kills
+> the OOM-from-stale-load bug class. Includes idle-vs-working activity probe (`gpu_busy_report`)
+> and non-interactive confirm (`MUSHISHI_ASSUME_YES`) for the Bridge daemon. (3) **Correction:**
+> the Step 1.3 compose shown in v1.5–v1.7.1 still listed `--moe-backend triton` and
+> `VLLM_USE_FLASHINFER_MOE_FP4=1`. Both were REMOVED from the as-built compose (v1.5.1,
+> 2026-05-17) — they *break* NVFP4 MoE on SM120/RTX 5090 (vllm-project/vllm#34452); vLLM
+> auto-selects the right backend. Doc now matches as-built. See Decision Log §v1.8-1.
 > v1.7.1 (Jun 10, 2026): **Truth-pass patch.** (1) Restic backup had been SILENTLY FAILING since
 > May 23 — cron's PATH lacks `~/.local/bin` where restic lives. Fixed: absolute path in backup.sh
 > + crontab; coverage expanded (audio gateway code, nemotron-forensic, comfyui/user, voice
@@ -357,9 +369,12 @@ Nemotron GPU forensic config (:8000) ──YES──▶ serve here ONLY
 │   ├── paperclip/            ← Phase 5.5
 │   ├── unsloth/              ← Phase 5 reference script
 │   └── scripts/
-│       ├── agent-mode.sh
+│       ├── gpu-tenants.sh    ← v1.8 NEW: shared GPU stop-list + busy probe (sourced by all modes)
+│       ├── mode-picker.sh    ← v1.8: interactive mode menu / StopAll
+│       ├── agent-mode.sh     ← v1.8: Nemotron light + TTS coexisting
 │       ├── forensic-mode.sh  ← v1.5 NEW: start vLLM with forensic config
 │       ├── creative-mode.sh
+│       ├── audio-mode.sh / music-mode.sh / coding-mode.sh / audio-stop.sh  ← v1.8 mode family
 │       ├── client-job.sh     ← v1.5 NEW: full forensic pipeline orchestrator
 │       ├── backup.sh
 │       ├── benchmark.sh      ← Phase 4
@@ -387,7 +402,9 @@ Nemotron GPU forensic config (:8000) ──YES──▶ serve here ONLY
 ├── 06-configs/
 │   ├── creative-stack/
 │   ├── vllm/                 ← creative-stack LLMs (hermes-3-8b, dolphin)
-│   ├── vllm-nemotron/        ← v1.5 NEW: PRIMARY Nemotron deployment
+│   ├── vllm-nemotron/        ← v1.5 NEW: PRIMARY Nemotron deployment (forensic)
+│   │   └── docker-compose.yml
+│   ├── vllm-nemotron-agent/  ← v1.8 NEW: Nemotron light agent config (shares cache volumes)
 │   │   └── docker-compose.yml
 │   ├── nemotron/             ← DEPRECATED v1.5: NIM compose, kept for archive
 │   ├── trtllm/               ← DEPRECATED v1.5: TRT-LLM attempt, kept for Decision Log reference
@@ -808,6 +825,15 @@ mkdir -p /data/ai/06-configs/vllm-nemotron
 
 `/data/ai/06-configs/vllm-nemotron/docker-compose.yml`:
 
+> **v1.8 as-built correction:** earlier versions of this block set `VLLM_USE_FLASHINFER_MOE_FP4=1`
+> and `--moe-backend triton`. Both were removed in the as-built v1.5.1 compose (2026-05-17): they
+> **break** NVFP4 MoE on SM120 / RTX 5090 — vLLM auto-selects the correct NVFP4 MoE backend
+> (confirmed in vllm-project/vllm#34452: the model works *only without* the FlashInfer MoE env
+> vars). The as-built compose also adds `VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0` (frees
+> ~0.5–1GB) and raises `--gpu-memory-utilization` to 0.95 (clean GPU, sequential workflow).
+> The block below matches the live file (mirrored at `configs/vllm-nemotron/docker-compose.yml`
+> in this repo). **Do not re-add the removed flags.**
+
 ```yaml
 services:
   vllm-nemotron:
@@ -817,10 +843,10 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
-      # Enable FlashInfer NVFP4 MoE path (Blackwell-native)
-      - VLLM_USE_FLASHINFER_MOE_FP4=1
       # Build only for SM_120 (RTX 5090) — cuts JIT compile time
       - TORCH_CUDA_ARCH_LIST=12.0
+      # Disable CUDA graph memory profiling — frees ~0.5-1GB for KV cache
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
       - VLLM_LOGGING_LEVEL=INFO
     ports:
       - "8000:8000"
@@ -852,13 +878,12 @@ services:
           --max-model-len 180000 \
           --max-num-seqs 4 \
           --max-num-batched-tokens 16384 \
-          --gpu-memory-utilization 0.92 \
+          --gpu-memory-utilization 0.95 \
           --kv-cache-dtype fp8 \
           --enable-prefix-caching \
           --reasoning-parser nemotron_v3 \
           --enable-auto-tool-choice \
           --tool-call-parser qwen3_coder \
-          --moe-backend triton \
           --limit-mm-per-prompt '{"video": 1, "image": 8, "audio": 1}' \
           --media-io-kwargs '{"video": {"fps": 8, "num_frames": 512}}' \
           --allowed-local-media-path /mnt \
@@ -882,13 +907,13 @@ volumes:
 | `--max-model-len` | 180000 | Stable 180K context. Practical ceiling on 32GB at FP8 KV is ~228K. 180K = ~25% headroom. Covers 95% of client work. Bump to 200K only on real context-full errors. |
 | `--max-num-seqs` | 4 | Sequential workflow (no concurrent ComfyUI). Aligns with the 3-5 agent concurrent ceiling from v1.4 VRAM analysis. |
 | `--max-num-batched-tokens` | 16384 | Per-batch token cap. Conservative for long multimodal prompts. |
-| `--gpu-memory-utilization` | 0.92 | Aggressive (solo operation, iGPU display, no concurrent VRAM pressure). |
+| `--gpu-memory-utilization` | 0.95 | Aggressive (solo operation, iGPU display, no concurrent VRAM pressure). Was 0.92 in v1.5.0; raised in as-built v1.5.1 (clean GPU, sequential workflow). |
 | `--kv-cache-dtype` | fp8 | Halves attention-KV per token. Negligible quality impact for description tasks. (On this NemotronH hybrid only 6/52 layers attend, so attention-KV is already tiny — ~3 KB/token; this is a small saving, not the "2× context" lever earlier docs implied. Context is bound by total VRAM, not KV. See §7/§8 corrections.) |
 | `--enable-prefix-caching` | on | **Critical for forensic workflow.** Multi-pass requests reuse cached video tokens: Pass 2+ are 5-7× faster. |
 | `--reasoning-parser` | nemotron_v3 | Required for the model's `<think>...</think>` reasoning blocks to be parsed. |
 | `--enable-auto-tool-choice` | on | Required for function-call output structure. |
 | `--tool-call-parser` | qwen3_coder | Required — Nemotron's tool format aligns with Qwen3-Coder. |
-| `--moe-backend` | triton | **Workaround for FlashInfer MoE bug on consumer Blackwell.** Without this, MoE inference fails on RTX 5090. |
+| ~~`--moe-backend triton`~~ | **REMOVED (v1.5.1 as-built)** | Earlier docs listed this as a "FlashInfer MoE bug workaround". Wrong on this hardware: triton is not supported for NVFP4 MoE and the flag (like `VLLM_USE_FLASHINFER_MOE_FP4=1`) breaks SM120/RTX 5090. vLLM auto-selects the correct backend (vllm-project/vllm#34452). Do not set either. |
 | `--limit-mm-per-prompt` | `{video:1, image:8, audio:1}` | Per-request media caps. 8 images = main video + 6 reference images + 1 spare. |
 | `--media-io-kwargs` | `{video:{fps:8, num_frames:512}}` | **Default sampling.** 8 fps captures motion for forensic description; up to 512 frames = ~64 seconds. Per-request overridable. |
 | `--allowed-local-media-path` | /mnt | Allows `file:///mnt/...` URLs for local client videos. |
@@ -1463,6 +1488,15 @@ Both scripts present, `forensic_analyzer.py` executable, OpenAI client installed
 
 ## Step 1.7 — Mode-switch scripts
 
+> **v1.8 as-built note (EXECUTION-PLAN B2):** the listings below are the v1.5 originals, kept for
+> the historical record. The live scripts have since been refactored: every mode switcher now
+> `source`s **`gpu-tenants.sh`** (see the v1.8 subsection at the end of this step) instead of
+> carrying its own grep-based stop logic, and the mode family has grown to **six** switchers —
+> `forensic-mode.sh`, `agent-mode.sh`, `creative-mode.sh`, `audio-mode.sh`, `music-mode.sh`,
+> `coding-mode.sh` — plus `mode-picker.sh` (interactive menu / StopAll) and `audio-stop.sh`.
+> The stop-list, confirm, and busy-probe behavior described in that subsection supersedes the
+> inline `docker stop $(docker ps | grep ...)` patterns shown here.
+
 ### forensic-mode.sh (NEW in v1.5)
 
 `/data/ai/01-workspace/scripts/forensic-mode.sh`:
@@ -1641,8 +1675,63 @@ chmod +x /data/ai/01-workspace/scripts/client-job.sh
 chmod +x /data/ai/01-workspace/scripts/creative-mode.sh
 ```
 
+### gpu-tenants.sh — single source of truth for the GPU stop-list (v1.8, B2)
+
+`/data/ai/01-workspace/scripts/gpu-tenants.sh` exists because the original mode scripts each
+carried their own `docker ps | grep` stop pattern, and the five copies drifted: `vllm-coding`
+(same :8000 bind) and the three lip-sync tiers were missing from older greps, so switching modes
+could leave a stale tenant holding VRAM → OOM on the incoming model. The fix is ONE shared file:
+
+- **`GPU_TENANTS`** — the canonical array of this box's own restartable GPU containers (every
+  container with `runtime: nvidia` in the composes under `/data/ai/06-configs/`):
+  `vllm-nemotron` (forensic, :8000, ~28-30GB) · `vllm-nemotron-agent` (agent, :8000, ~22GB) ·
+  `vllm-coding` (:8000) · `creative-comfyui` · `creative-music` (YuE, ~16GB) · `creative-tts`
+  (Fish Speech, lazy VRAM) · `creative-audio-worker` (WhisperX on jobs) · `creative-musetalk` /
+  `creative-hallo2` / `creative-latentsync` (lip-sync draft/cinematic/production, lazy VRAM).
+  Register any NEW `runtime: nvidia` container here and every mode picks it up automatically.
+- **`stop_gpu_tenants_except [keep ...]`** / **`stop_all_gpu_tenants`** — stop every running
+  tenant not in the keep-list. Only ever acts on `GPU_TENANTS` names, so a foreign session's
+  process is never touched (GPU-etiquette safe).
+- **`running_gpu_tenants_except`** — list what a switch would stop (gates the confirm prompt).
+- **`confirm_or_assume`** — y/N confirm with a `MUSHISHI_ASSUME_YES` env override for headless
+  callers (Mushishi Bridge daemon has no TTY). Fails CLOSED: no explicit yes ⇒ abort. The
+  override never changes *which* tenants stop, only answers the prompt.
+- **`gpu_busy_report` / `gpu_sm_peak` / `gpu_resident_line`** — idle-vs-WORKING probe: vLLM
+  `/metrics` running+waiting gauges, ComfyUI `/queue`, audio RQ registries, then an SM-util
+  backstop. A merely *resident* model (loaded, 0 requests) is safe to purge; *working* models
+  trigger a warning with what's running. "Loaded" is not "busy" — that distinction is the point.
+
+**Who sources it:** all six `*-mode.sh` switchers and `mode-picker.sh` (its StopAll uses
+`stop_all_gpu_tenants`). `audio-stop.sh` is the one non-sourcing script — it stops a fixed list
+of audio *compose services* (fish-speech, the three lip-sync engines, music, worker, gateway,
+rq-dashboard) rather than GPU tenants by container name, keeping Redis (job history) up.
+
+### agent-mode.sh — Nemotron light + TTS coexisting (v1.8, B2)
+
+`/data/ai/01-workspace/scripts/agent-mode.sh` + `/data/ai/06-configs/vllm-nemotron-agent/`
+(container `vllm-nemotron-agent`). Same Nemotron NVFP4 model and port as forensic mode, tuned so
+the light audio stack fits alongside on the 32GB card:
+
+| Config | Context | `--gpu-memory-utilization` | VRAM | Runs alongside |
+|---|---|---|---|---|
+| forensic (`vllm-nemotron`) | 180K | 0.95 | ~28-30 GB | nothing (exclusive) |
+| agent (`vllm-nemotron-agent`) | 32K | 0.82 | ~25.7 GB | Fish Speech TTS (~2-3GB) + audio worker |
+
+- Never run both — they bind the same :8000. `agent-mode.sh` handles this via
+  `stop_gpu_tenants_except vllm-nemotron-agent creative-audio-worker creative-tts`.
+- Agent compose also caps `--max-num-seqs 2` / `--max-num-batched-tokens 4096` and shares the
+  forensic deployment's HF/vLLM cache volumes (external), so the JIT/compile warmup is paid once.
+- Like the as-built forensic compose, it does **not** set `--moe-backend triton` or
+  `VLLM_USE_FLASHINFER_MOE_FP4` (both break NVFP4 MoE on SM120 — see Step 1.3 correction).
+- The script then brings up Redis + rq-dashboard + audio gateway (:9000) + audio worker + Fish
+  Speech, and waits on both health endpoints.
+- **Use case:** pipelines needing vision + TTS in one run — e.g. single-pass comic-narrator
+  (`comic-narrator page.jpg --layout manga -o out.mp4`) — and general agent work with TTS on
+  tap. Heavy audio (lip-sync/music tiers) still requires `audio-mode.sh` / `music-mode.sh`.
+
 ### ✅ Gate 1.7 — Mode scripts ready
 All three scripts executable. `forensic-mode.sh` starts vLLM correctly. `client-job.sh` runs end-to-end.
+**v1.8 addendum:** `bash -n` passes on all six switchers + `gpu-tenants.sh`; every switcher sources `gpu-tenants.sh`; `agent-mode.sh` brings up Nemotron-light :8000 AND audio gateway :9000 together.
 
 ---
 
@@ -3517,7 +3606,7 @@ Routine quarterly rotation is good hygiene even without an incident.
 |---|---|
 | Container exits during startup | `docker logs vllm-nemotron` — usually VRAM (drop `--max-model-len`) or `vllm[audio]` pip install timeout |
 | `Quantization 'nvfp4' is not supported` | Container too old — confirm `vllm/vllm-openai:v0.20.0`, not earlier |
-| `MoE backend flashinfer error` on consumer Blackwell | Already mitigated by `--moe-backend triton`. If still appears, flag isn't being parsed — check compose YAML formatting |
+| `MoE backend flashinfer error` on consumer Blackwell | Check the compose does **NOT** set `--moe-backend triton` or `VLLM_USE_FLASHINFER_MOE_FP4=1` — both break NVFP4 MoE on SM120/RTX 5090 (earlier doc versions wrongly prescribed them; removed in as-built v1.5.1). vLLM auto-selects the correct backend (vllm-project/vllm#34452). |
 | OOM during weight load | Drop `--gpu-memory-utilization` to 0.88, or `--max-model-len` to 160000 |
 | Multimodal request returns text-only response | Verify `--trust-remote-code` is set; image URL reachable from container; `--allowed-local-media-path` matches your `/mnt` mount |
 | Pass 2 calls slow (no prefix-caching speedup) | Confirm `--enable-prefix-caching` in command. Caching only works if video URL is identical across calls. |
@@ -3668,11 +3757,16 @@ sdd-check                # Post-task SDD gate verification
 ## On Linux (mushishi)
 
 ```bash
-# Mode switching (v1.5)
-forensic-mode.sh                   # Start vLLM Nemotron (180K, FP8 KV, EVS off)
-agent-mode.sh                      # Lighter Nemotron config
+# Mode switching (v1.8 — all switchers share the gpu-tenants.sh stop-list)
+mode-picker.sh                     # Interactive menu (shows resident/busy state; StopAll)
+forensic-mode.sh                   # vLLM Nemotron exclusive (180K, FP8 KV, EVS off, ~28-30GB)
+agent-mode.sh                      # Nemotron light (32K, ~22GB) + Fish Speech TTS coexisting
 creative-mode.sh 30                # T2+: full VRAM swap needed
 creative-mode.sh 7                 # T1: exception check (7GB creative)
+audio-mode.sh                      # Full audio stack (lip-sync tiers etc.)
+music-mode.sh                      # YuE music generation
+coding-mode.sh                     # vllm-coding (:8000)
+audio-stop.sh                      # Stop audio services, keep Redis
 client-job.sh <video> <job_id>     # Full forensic pipeline for one client
 
 # Services
@@ -3722,7 +3816,10 @@ cd /data/ai/08-portfolio/specs && git log --oneline
 | `/data/ai/02-models/nemotron-nvfp4/modeling.py` | Patched with `**kwargs` (TRT-LLM journey artifact, harmless for vLLM) |
 | `/etc/systemd/system/nemotron-cpu.service` | CPU Nemotron always-on service |
 | `/etc/systemd/system/nvidia-power-limit.service` | GPU power limit persistence |
-| `/data/ai/01-workspace/scripts/agent-mode.sh` | Switch to agent mode |
+| `/data/ai/06-configs/vllm-nemotron-agent/docker-compose.yml` | **v1.8 NEW**: Nemotron light agent config (32K ctx, coexists with TTS) |
+| `/data/ai/01-workspace/scripts/gpu-tenants.sh` | **v1.8 NEW**: single-source-of-truth GPU stop-list + busy probe (sourced by all mode switchers) |
+| `/data/ai/01-workspace/scripts/agent-mode.sh` | **v1.8**: Switch to agent mode (Nemotron light + audio gateway + Fish Speech) |
+| `/data/ai/01-workspace/scripts/mode-picker.sh` | **v1.8**: interactive mode menu / StopAll |
 | `/data/ai/01-workspace/scripts/forensic-mode.sh` | **v1.5 NEW**: Start vLLM forensic config |
 | `/data/ai/01-workspace/scripts/client-job.sh` | **v1.5 NEW**: Full forensic pipeline for one client |
 | `/data/ai/01-workspace/scripts/creative-mode.sh` | Switch to creative mode (VRAM-aware) |
@@ -4077,8 +4174,8 @@ The "why we tried that" is more valuable than the "it didn't work" — these art
 - **Prefix caching**: vLLM feature that caches the KV representations of the prompt prefix across requests. For multi-pass against the same video, the video tokens are computed once and reused — 5-7× speedup on subsequent passes.
 - **Reasoning budget**: For thinking-mode models, the maximum tokens allowed in the `<think>...</think>` reasoning trace before forcing the final answer. Larger budget = deeper reasoning = better quality on complex tasks, at cost of more inference time.
 - **Grace period**: Tokens after the reasoning budget is exhausted where the model is allowed to "wrap up" its reasoning gracefully before being cut off.
-- **Triton MoE backend**: vLLM's alternative MoE kernel implementation. Required on consumer Blackwell (RTX 5090/Pro 6000) due to a current FlashInfer MoE bug. Set via `--moe-backend triton`.
-- **Forensic mode / Creative mode / Agent mode**: Three operational modes corresponding to three VRAM configurations of Nemotron + Creative stack. Sequential — never concurrent.
+- **Triton MoE backend**: vLLM's alternative MoE kernel implementation. **Historical — do not use here.** Earlier doc versions claimed it was "required on consumer Blackwell due to a FlashInfer MoE bug"; on this stack the opposite is true: `--moe-backend triton` is not supported for NVFP4 MoE and (like `VLLM_USE_FLASHINFER_MOE_FP4=1`) breaks SM120/RTX 5090. Both were removed in the as-built v1.5.1 compose; vLLM auto-selects the correct backend (vllm-project/vllm#34452).
+- **Forensic mode / Creative mode / Agent mode**: Operational modes = VRAM configurations of the stack, switched via the `*-mode.sh` scripts. Exclusive on the GPU (enforced by `gpu-tenants.sh` since v1.8) — except agent mode, which deliberately co-loads Nemotron-light with the light audio stack (Fish Speech). v1.8 mode family: forensic, agent, creative, audio, music, coding.
 
 ---
 
@@ -4258,9 +4355,20 @@ Antigravity: KEEP. 10-min trial under 14GB RAM, configured to Hermes :8642 perso
 
 **Doc-staleness note during research:** a cached copy of the upstream Desktop page initially lacked the Remote Gateway section; the GitHub `main` source (`web-dashboard.md`) and freshly-indexed pages confirmed it. Treated GitHub `main` as authoritative.
 
+### §v1.8-1: Agent mode + shared GPU-tenant stop-list, and the triton-flag correction (Jul 2, 2026)
+
+**Context:** By mid-June the mode family had grown from three scripts (forensic/creative/client-job) to six switchers plus a picker, and the GPU tenant population had grown to ten containers across five compose dirs (forensic vLLM, agent vLLM, coding vLLM — all binding :8000 — ComfyUI, YuE music, Fish Speech, audio worker, and three lip-sync tiers). Each switcher carried its own `docker ps | grep` stop pattern, and the copies drifted: `vllm-coding` and the lip-sync tiers were missing from older greps, producing the OOM-from-stale-load bug class (switch modes → stale tenant still holding VRAM → incoming model OOMs, or two services fight over :8000).
+
+**What changed (EXECUTION-PLAN task B2):**
+1. **`gpu-tenants.sh`** — single source of truth. One canonical `GPU_TENANTS` array (every `runtime: nvidia` container in `/data/ai/06-configs/`), plus `stop_gpu_tenants_except` / `running_gpu_tenants_except` / `stop_all_gpu_tenants` helpers, a fail-closed `confirm_or_assume` (with `MUSHISHI_ASSUME_YES` for the headless Bridge daemon), and an idle-vs-WORKING probe (`gpu_busy_report`: vLLM `/metrics`, ComfyUI `/queue`, audio RQ registries, SM-util backstop). All six `*-mode.sh` switchers + `mode-picker.sh` source it; new GPU containers are registered once and every mode picks them up. The helpers only ever act on `GPU_TENANTS` names — a foreign session's process is never touched (GPU etiquette preserved).
+2. **`agent-mode.sh` + `/data/ai/06-configs/vllm-nemotron-agent/`** — a second Nemotron deployment tuned for coexistence: 32K ctx / util 0.82 / `--max-num-seqs 2` (~25.7GB) leaves room for Fish Speech (~2-3GB) + the audio worker, so a single mode serves vision + TTS in one run (single-pass comic-narrator). Shares the forensic deployment's external cache volumes (JIT warmup paid once); same :8000 bind means it's mutually exclusive with forensic/coding vLLM — enforced by the shared stop-list.
+3. **Doc correction (the important one for anyone copying configs):** v1.5–v1.7.1 showed `--moe-backend triton` and `VLLM_USE_FLASHINFER_MOE_FP4=1` in the Step 1.3 compose, the flag-rationale table, troubleshooting, and glossary — describing triton as a *required workaround*. The as-built compose (v1.5.1, 2026-05-17) removed both because they **break** NVFP4 MoE on SM120/RTX 5090; vLLM auto-selects the correct backend (vllm-project/vllm#34452: "the model works only without using the [FlashInfer MoE] environment variables"). The live `configs/vllm-nemotron/docker-compose.yml` in this repo was already correct; the doc prose lagged for six weeks. All four locations now match as-built.
+
+**Lesson:** a compose file fixed in place is only half a fix — the doc block people actually copy from must be corrected in the same change, or the bug re-ships itself. Same drift class as the five stop-list greps: any duplicated operational truth needs a single source plus references.
+
 ---
 
-*Document ends. Version 1.7 — June 4, 2026.*
+*Document ends. Version 1.8 — July 2, 2026.*
 *For any new Claude session: paste this document and say which Gate you last completed.*
-*Reviewed and improved with: Claude (primary architect for v1.3 → v1.7), Gemini (initial v1.0 plan + comparative research), Kimi (v1.1 → v1.2 review). The v1.4 → v1.5 journey is documented in the Decision Log above; the v1.5 → v1.6 Aion → Hermes Workspace pivot is §v1.6-1; the v1.6 → v1.6.1 port fixes are §v1.6.1-1; the v1.6.1 → v1.6.2 execution discoveries are §v1.6.2-1; the v1.6.2 → v1.6.3 COOKIE_SECURE fix and Phase 2.5 close-out are §v1.6.3-1; the v1.6.3 → v1.6.4 PRISM decision, LiteLLM Option B, DeerFlow port correction, and schema fixes are §v1.6.4-1 through §v1.6.4-6; the v1.6.4 → v1.7 Hermes Desktop Remote Gateway migration is §v1.7-1.*
+*Reviewed and improved with: Claude (primary architect for v1.3 → v1.7), Gemini (initial v1.0 plan + comparative research), Kimi (v1.1 → v1.2 review). The v1.4 → v1.5 journey is documented in the Decision Log above; the v1.5 → v1.6 Aion → Hermes Workspace pivot is §v1.6-1; the v1.6 → v1.6.1 port fixes are §v1.6.1-1; the v1.6.1 → v1.6.2 execution discoveries are §v1.6.2-1; the v1.6.2 → v1.6.3 COOKIE_SECURE fix and Phase 2.5 close-out are §v1.6.3-1; the v1.6.3 → v1.6.4 PRISM decision, LiteLLM Option B, DeerFlow port correction, and schema fixes are §v1.6.4-1 through §v1.6.4-6; the v1.6.4 → v1.7 Hermes Desktop Remote Gateway migration is §v1.7-1; the v1.7.1 → v1.8 agent-mode / shared GPU-tenant stop-list refactor and triton-flag correction are §v1.8-1.*
 *v1.5 changes derived from six hours of TRT-LLM debugging on May 14–15, followed by a full architecture rethink informed by the commercial creative use case clarification. All reasoning preserved.*

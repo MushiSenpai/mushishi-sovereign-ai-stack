@@ -1,0 +1,75 @@
+# vLLM Nemotron — LIGHT AGENT CONFIG (EXECUTION-PLAN task B2)
+#
+# Same model + port as the forensic config, tuned to coexist with the light
+# audio stack (Fish Speech ~2-3GB) on the 32GB RTX 5090:
+#   forensic: 180K ctx, util 0.92  → ~30GB  (exclusive)
+#   agent:     32K ctx, util 0.82  → ~25.7GB  (+ Fish Speech fits)
+# Never run alongside the forensic container — both bind :8000.
+# NOTE: --moe-backend triton and VLLM_USE_FLASHINFER_MOE_FP4 are absent on
+# purpose — both break NVFP4 MoE on SM120/RTX 5090 (matches as-built forensic
+# compose, which removed them; the v1.7.1 doc still shows them).
+# Cache volumes are shared with the forensic deployment (external) so the
+# JIT/compile warmup is paid once.
+
+services:
+  vllm-nemotron-agent:
+    image: vllm/vllm-openai:v0.20.0
+    container_name: vllm-nemotron-agent
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - TORCH_CUDA_ARCH_LIST=12.0
+      - VLLM_LOGGING_LEVEL=INFO
+    ports:
+      - "8000:8000"
+    volumes:
+      - /data/ai/02-models/nemotron-nvfp4:/model:ro
+      - /mnt:/mnt:ro
+      - /data/ai/08-portfolio:/portfolio:ro
+      - vllm-hf-cache:/root/.cache/huggingface
+      - vllm-vllm-cache:/root/.cache/vllm
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    shm_size: "16gb"
+    restart: "no"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        echo "[startup] Installing audio support packages (one-time, cached after)..."
+        pip install --no-cache-dir 'vllm[audio]'
+        echo "[startup] Audio deps ready. Starting vLLM (agent-light)..."
+        exec vllm serve /model \
+          --served-model-name nvidia/nemotron-3-nano-omni-30b-a3b-reasoning \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --trust-remote-code \
+          --max-model-len 32768 \
+          --max-num-seqs 2 \
+          --max-num-batched-tokens 4096 \
+          --gpu-memory-utilization 0.82 \
+          --kv-cache-dtype fp8 \
+          --enable-prefix-caching \
+          --reasoning-parser nemotron_v3 \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_coder \
+          --limit-mm-per-prompt '{"video": 1, "image": 2, "audio": 1}' \
+          --allowed-local-media-path /mnt
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 600s
+
+volumes:
+  vllm-hf-cache:
+    name: vllm-nemotron_vllm-hf-cache
+    external: true
+  vllm-vllm-cache:
+    name: vllm-nemotron_vllm-vllm-cache
+    external: true

@@ -31,8 +31,13 @@ everything that answers no goes in.
 pinned versions known to include them, or you get `no kernel image available`
 at first inference, not at load.
 
-**FlashInfer MoE is broken on consumer Blackwell** — `--moe-backend triton` is
-the workaround for Nemotron MoE.
+**FlashInfer MoE is broken on consumer Blackwell — but don't force a workaround.**
+`--moe-backend triton` / `VLLM_USE_FLASHINFER_MOE_FP4=1` is *not* the fix (triton
+isn't supported for NVFP4 MoE). Just **don't set the FlashInfer MoE env vars** and let
+vLLM auto-select the correct NVFP4 MoE backend for SM120. Confirmed on RTX 5090 in
+[vllm#34452](https://github.com/vllm-project/vllm/issues/34452). *(Updated 2026-06-27:
+this lesson originally recommended `--moe-backend triton`; that was removed in compose
+v1.5.1 once vLLM's auto-selection was confirmed working.)*
 
 **Total per-sequence VRAM is the real concurrency limit, not attention-KV.**
 Weights fitting means nothing; 3-5 concurrent long-context sessions is the
