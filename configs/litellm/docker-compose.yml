@@ -21,7 +21,11 @@ services:
       - litellm-internal
 
   litellm-proxy:
-    image: ghcr.io/berriai/litellm-database:main-latest
+    # Pinned by DIGEST = litellm 1.82.6 (2026-06-30). Was :main-latest — a FLOATING
+    # tag that silently drifted onto 1.82.6, whose anthropic pass-through defaults to
+    # the Responses API and 400'd Claude Code/codelocal. Digest is immutable; bump it
+    # deliberately after testing. (v-style tags aren't published for the -database image.)
+    image: ghcr.io/berriai/litellm-database@sha256:7bb80500033392233c79f74d4f99d43512da47626cdc9bf46e53df16803d88cd
     container_name: litellm-proxy
     restart: unless-stopped
     depends_on:
@@ -36,6 +40,18 @@ services:
     networks:
       - litellm-internal
       - phoenix_default
+    # The proxy must reach HOST processes on 172.17.0.1 — the CPU llama-server
+    # endpoints :8001 (personal-chain-cpu) and :8002 (coding-cpu). The
+    # DOCKER-USER firewall (harden-docker-firewall.sh, 2026-06-10) permits the
+    # docker0 subnet 172.17.0.0/16 to reach host ports but DROPS the
+    # custom-bridge subnets (172.21/172.22.0.0/16) this proxy lives on, so those
+    # host-process routes time out. (vLLM :8000 works regardless — it is a
+    # PUBLISHED container port via Docker NAT, not a raw host bind.) Fix: attach
+    # the proxy to docker0 at runtime via connect-docker0.sh (compose cannot
+    # attach the default `bridge` network — "aliases only on user-defined
+    # networks"). That gives the proxy a 172.17.x source IP the firewall allows
+    # and also un-breaks the pre-existing personal-chain-cpu :8001 route.
+    # Run after `up`:  bash /data/ai/06-configs/litellm/connect-docker0.sh
 
 networks:
   litellm-internal:

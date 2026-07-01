@@ -49,7 +49,7 @@ model_list:
       api_key: none
       max_parallel_requests: 2
       rpm: 40
-      cooldown_time: 0          # GPU Nemotron is up only during a dub (audio-stack cross-dub.sh); never auto-cooldown
+      cooldown_time: 0          # GPU Nemotron is up only during a dub (cross-dub.sh); never auto-cooldown
 
   - model_name: pro-planning
     litellm_params:
@@ -100,6 +100,41 @@ model_list:
       cost_per_token_input: 0
       cost_per_token_output: 0
 
+  # ── AI-1: coding stack — the stable name Claude Code points at, never moves ──
+  # `coding` = GPU Qwen3-Coder-30B-AWQ on vLLM :8000 (host, via docker bridge),
+  # failover to the small CPU Qwen2.5-Coder-7B on :8002 (llama.cpp, always-on).
+  # Same Qwen family both sides so tool-call dialect survives a mid-task failover.
+  # Short timeout so a dead/render-busy GPU endpoint fails over fast, not hangs.
+  - model_name: coding
+    litellm_params:
+      model: openai/qwen3-coder
+      api_base: http://172.17.0.1:8000/v1
+      api_key: none
+      timeout: 600
+      # Pin Qwen3-Coder's OFFICIAL sampling so Claude Code's Anthropic-tuned defaults
+      # can't push a 30B-A3B toward narration on long agentic turns. (research 2026-06-30)
+      temperature: 0.7
+      top_p: 0.8
+      max_tokens: 8192
+      parallel_tool_calls: false      # avoid vLLM multi-<function> JSON corruption (#43713)
+      extra_body:                     # non-OpenAI sampling — via extra_body so drop_params keeps them
+        top_k: 20
+        repetition_penalty: 1.05
+    model_info:
+      cost_per_token_input: 0
+      cost_per_token_output: 0
+
+  # CPU failover target for `coding` (Qwen2.5-Coder-7B GGUF, llama.cpp :8002).
+  - model_name: coding-cpu
+    litellm_params:
+      model: openai/qwen-coder-cpu
+      api_base: http://172.17.0.1:8002/v1
+      api_key: none
+      timeout: 120
+    model_info:
+      cost_per_token_input: 0
+      cost_per_token_output: 0
+
 router_settings:
   routing_strategy: simple-shuffle
   enable_pre_call_checks: true
@@ -133,6 +168,11 @@ router_settings:
     # pro-planning: V4-Pro only, no fallbacks. Board approval required.
     - pro-planning:
         - deepseek-pro
+    # AI-1: coding — GPU vLLM :8000 → CPU Qwen :8002. Failure-based (load-bearing):
+    # when the GPU endpoint is down/timing-out (render holds the card), `coding`
+    # transparently drops to the always-on CPU coder. Returns to GPU when :8000 is back.
+    - coding:
+        - coding-cpu
   # Budget enforcement per cloud provider
   provider_budget_config:
     nvidia_nim:
@@ -148,10 +188,29 @@ router_settings:
     - router_budget_limiting
 
 litellm_settings:
-  success_callback:
-    - "opentelemetry"
-  failure_callback:
-    - "opentelemetry"
+  # OTEL → Arize Phoenix (AI-5a, 2026-07-02). Callback name MUST be "otel" —
+  # "opentelemetry" is NOT in litellm._known_custom_logger_compatible_callbacks;
+  # it gets echoed at startup ("Initialized Success Callbacks - ['opentelemetry']")
+  # but never instantiates the OpenTelemetry logger, so no spans ever export.
+  # "callbacks" covers success AND failure. Transport: run.env sets
+  # OTEL_EXPORTER=otlp_http + OTEL_EXPORTER_OTLP_ENDPOINT=http://arize-phoenix:6006
+  # (this Phoenix build ingests OTLP over HTTP :6006; :4318 unbound, gRPC :4317
+  # broken by LiteLLM's /v1/traces endpoint-suffix normalization).
+  callbacks: ["otel"]
+  # Claude Code (ANTHROPIC_BASE_URL=:4000, e.g. the `codelocal` launcher) sends
+  # Anthropic /v1/messages. LiteLLM 1.82.6's anthropic pass-through defaults
+  # OpenAI-compatible backends (vLLM) to the Responses API (/v1/responses), which
+  # vLLM v0.20.0 rejects → 400 "212 validation errors / input should be a valid
+  # string". Force Chat Completions for the anthropic→OpenAI bridge. (2026-06-30)
+  use_chat_completions_url_for_anthropic_messages: true
+  # Claude Code also sends Anthropic-ONLY params (context_management, and likely others)
+  # that an OpenAI/vLLM backend can't accept → 400 UnsupportedParamsError. Drop unsupported
+  # params instead of erroring — the local model just skips features it lacks; core params
+  # (messages/max_tokens/tools/temperature) still pass through. (2026-06-30)
+  drop_params: true
+  modify_params: true        # massage tool/param shapes for the OpenAI/vLLM backend
+  request_timeout: 600       # long multi-file agentic turns exceed defaults → false "stopped"
+  num_retries: 3
 
 general_settings:
   master_key: "os.environ/LITELLM_MASTER_KEY"
